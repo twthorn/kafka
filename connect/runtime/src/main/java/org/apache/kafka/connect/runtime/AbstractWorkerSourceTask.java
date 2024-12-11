@@ -396,12 +396,25 @@ public abstract class AbstractWorkerSourceTask extends WorkerTask<SourceRecord, 
         for (final SourceRecord preTransformRecord : toSend) {
             ProcessingContext<SourceRecord> context = new ProcessingContext<>(preTransformRecord);
             final SourceRecord record = transformationChain.apply(context, preTransformRecord);
-            final ProducerRecord<byte[], byte[]> producerRecord = convertTransformedRecord(context, record);
-            if (producerRecord == null || context.failed()) {
+            // If the result of a transformation is null, then the record should be filtered/skipped & there was no error
+            if (record == null) {
                 counter.skipRecord();
                 recordDropped(preTransformRecord);
                 processed++;
                 continue;
+            }
+            final ProducerRecord<byte[], byte[]> producerRecord = convertTransformedRecord(context, record);
+
+            // If the conversion of the record fails, handle based on errors tolerance
+            if (failedToConvertRecord(producerRecord, context) && shouldSkipRecordWithError()) {
+                counter.skipRecord();
+                recordDropped(preTransformRecord);
+                processed++;
+                continue;
+            } else if (failedToConvertRecord(producerRecord, context) && !shouldSkipRecordWithError()) {
+                log.warn("{} Failed to convert record, offset '{}' and partition '{}'. Raising exception {}",
+                        this, record.sourceOffset(), record.sourcePartition(), context.error());
+                throw new ConnectException("Failed to convert record", context.error());
             }
 
             log.trace("{} Appending record to the topic {} with key {}, value {}", this, record.topic(), record.key(), record.value());
@@ -420,7 +433,7 @@ public abstract class AbstractWorkerSourceTask extends WorkerTask<SourceRecord, 
                             }
                             log.trace("{} Failed record: {}", AbstractWorkerSourceTask.this, preTransformRecord);
                             producerSendFailed(context, false, producerRecord, preTransformRecord, e);
-                            if (retryWithToleranceOperator.getErrorToleranceType() == ToleranceType.ALL) {
+                            if (shouldSkipRecordWithError()) {
                                 counter.skipRecord();
                                 submittedRecord.ifPresent(SubmittedRecords.SubmittedRecord::ack);
                             }
@@ -459,6 +472,14 @@ public abstract class AbstractWorkerSourceTask extends WorkerTask<SourceRecord, 
         toSend = null;
         batchDispatched();
         return true;
+    }
+
+    private boolean failedToConvertRecord(ProducerRecord<byte[], byte[]> record, ProcessingContext<SourceRecord> context) {
+        return record == null || context.failed();
+    }
+
+    private boolean shouldSkipRecordWithError() {
+        return retryWithToleranceOperator.getErrorToleranceType() == ToleranceType.ALL;
     }
 
     protected List<SourceRecord> poll() throws InterruptedException {

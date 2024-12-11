@@ -264,7 +264,7 @@ public class AbstractWorkerSourceTaskTest {
 
         assertArrayEquals(SERIALIZED_KEY, sent.getValue().key());
         assertArrayEquals(SERIALIZED_RECORD, sent.getValue().value());
-        
+
         verifyTaskGetTopic();
         verifyTopicCreation();
     }
@@ -706,6 +706,61 @@ public class AbstractWorkerSourceTaskTest {
         verify(transformationChain, times(2)).apply(any(), eq(record3));
     }
 
+    @Test
+    public void testSendRecordsConversionExceptionErrorToleranceNone() {
+        createWorkerTask();
+
+        SourceRecord record1 = new SourceRecord(PARTITION, OFFSET, TOPIC, 1, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
+        SourceRecord record2 = new SourceRecord(PARTITION, OFFSET, TOPIC, 2, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
+        SourceRecord record3 = new SourceRecord(PARTITION, OFFSET, TOPIC, 3, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
+
+        // When we try to convert the key/value of each record, throw an exception
+        throwExceptionConvertHeadersAndKeyValue(emptyHeaders(), TOPIC);
+
+        // Transformations for each record are a no-op
+        when(transformationChain.apply(any(), eq(record1))).thenReturn(record1);
+        when(transformationChain.apply(any(), eq(record2))).thenReturn(record2);
+        when(transformationChain.apply(any(), eq(record3))).thenReturn(record3);
+
+        TopicPartitionInfo topicPartitionInfo = new TopicPartitionInfo(0, null, Collections.emptyList(), Collections.emptyList());
+        TopicDescription topicDesc = new TopicDescription(TOPIC, false, Collections.singletonList(topicPartitionInfo));
+        when(admin.describeTopics(TOPIC)).thenReturn(Collections.singletonMap(TOPIC, topicDesc));
+
+        workerTask.toSend = Arrays.asList(record1, record2, record3);
+
+        // Send records should fail when errors.tolerance is none and the conversion call fails
+        assertThrows(ConnectException.class, workerTask::sendRecords);
+        assertThrows(ConnectException.class, workerTask::sendRecords);
+        assertThrows(ConnectException.class, workerTask::sendRecords);
+
+        // Set the conversion call to succeed, batch should succeed at sending all three records (none were skipped)
+        expectConvertHeadersAndKeyValue(emptyHeaders(), TOPIC);
+        assertTrue(workerTask.sendRecords());
+        verifySendRecord(3);
+    }
+
+    @Test
+    public void testSendRecordsConversionExceptionErrorToleranceAll() {
+        createWorkerTaskErrorsAllTolerance();
+
+        SourceRecord record1 = new SourceRecord(PARTITION, OFFSET, TOPIC, 1, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
+        SourceRecord record2 = new SourceRecord(PARTITION, OFFSET, TOPIC, 2, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
+        SourceRecord record3 = new SourceRecord(PARTITION, OFFSET, TOPIC, 3, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
+
+        // When we try to convert the key/value of each record, throw an exception
+        throwExceptionConvertHeadersAndKeyValue(emptyHeaders(), TOPIC);
+
+        // Transformations for each record are a no-op
+        when(transformationChain.apply(any(), eq(record1))).thenReturn(record1);
+        when(transformationChain.apply(any(), eq(record2))).thenReturn(record2);
+        when(transformationChain.apply(any(), eq(record3))).thenReturn(record3);
+
+        workerTask.toSend = Arrays.asList(record1, record2, record3);
+
+        // With errors.tolerance to all, the faiiled conversion should simply skip the record, and record successful batch
+        assertTrue(workerTask.sendRecords());
+    }
+
     private void expectSendRecord(Headers headers) {
         if (headers != null)
             expectConvertHeadersAndKeyValue(headers, TOPIC);
@@ -806,6 +861,20 @@ public class AbstractWorkerSourceTaskTest {
         assertEquals(valueConverter.fromConnectData(topic, headers, RECORD_SCHEMA, RECORD), SERIALIZED_RECORD);
     }
 
+    private void throwExceptionConvertHeadersAndKeyValue(Headers headers, String topic) {
+        if (headers.iterator().hasNext()) {
+            when(headerConverter.fromConnectHeader(anyString(), anyString(), eq(Schema.STRING_SCHEMA),
+                    anyString()))
+                    .thenAnswer((Answer<byte[]>) invocation -> {
+                        String headerValue = invocation.getArgument(3, String.class);
+                        return headerValue.getBytes(StandardCharsets.UTF_8);
+                    });
+        }
+
+        when(keyConverter.fromConnectData(eq(topic), any(Headers.class), eq(KEY_SCHEMA), eq(KEY)))
+                .thenThrow(new RetriableException("Failed to convert key"));
+    }
+
     private void expectApplyTransformationChain() {
         when(transformationChain.apply(any(), any(SourceRecord.class)))
                 .thenAnswer(AdditionalAnswers.returnsSecondArg());
@@ -819,6 +888,10 @@ public class AbstractWorkerSourceTaskTest {
 
     private void createWorkerTask() {
         createWorkerTask(keyConverter, valueConverter, headerConverter, RetryWithToleranceOperatorTest.noopOperator(), Collections::emptyList);
+    }
+
+    private void createWorkerTaskErrorsAllTolerance() {
+        createWorkerTask(keyConverter, valueConverter, headerConverter, RetryWithToleranceOperatorTest.allOperator(), Collections::emptyList);
     }
 
     private void createWorkerTask(Converter keyConverter, Converter valueConverter, HeaderConverter headerConverter,
