@@ -396,25 +396,15 @@ public abstract class AbstractWorkerSourceTask extends WorkerTask<SourceRecord, 
         for (final SourceRecord preTransformRecord : toSend) {
             ProcessingContext<SourceRecord> context = new ProcessingContext<>(preTransformRecord);
             final SourceRecord record = transformationChain.apply(context, preTransformRecord);
-            // If the result of a transformation is null, then the record should be filtered/skipped & there was no error
-            if (record == null) {
-                counter.skipRecord();
-                recordDropped(preTransformRecord);
-                processed++;
-                continue;
-            }
             final ProducerRecord<byte[], byte[]> producerRecord = convertTransformedRecord(context, record);
-
-            // If the conversion of the record fails, handle based on errors tolerance
-            if (failedToConvertRecord(producerRecord, context) && shouldSkipRecordWithError()) {
+            if (shouldFilterRecord(producerRecord, context) || (context.failed() && shouldSkipRecordWithError())) {
                 counter.skipRecord();
                 recordDropped(preTransformRecord);
                 processed++;
                 continue;
-            } else if (failedToConvertRecord(producerRecord, context) && !shouldSkipRecordWithError()) {
-                log.warn("{} Failed to convert record, offset '{}' and partition '{}'. Raising exception {}",
-                        this, record.sourceOffset(), record.sourcePartition(), context.error());
-                throw new ConnectException("Failed to convert record", context.error());
+            } else if (context.failed() && !shouldSkipRecordWithError()) {
+                logRecordWithError(preTransformRecord, record, context);
+                throw new ConnectException(String.format("Failed to %s record", getFailedOperation(record)), context.error());
             }
 
             log.trace("{} Appending record to the topic {} with key {}, value {}", this, record.topic(), record.key(), record.value());
@@ -474,12 +464,23 @@ public abstract class AbstractWorkerSourceTask extends WorkerTask<SourceRecord, 
         return true;
     }
 
-    private boolean failedToConvertRecord(ProducerRecord<byte[], byte[]> record, ProcessingContext<SourceRecord> context) {
-        return record == null || context.failed();
+    private boolean shouldFilterRecord(ProducerRecord<byte[], byte[]> producerRecord, ProcessingContext<SourceRecord> context) {
+        return (producerRecord == null) && !context.failed();
     }
 
     private boolean shouldSkipRecordWithError() {
         return retryWithToleranceOperator.getErrorToleranceType() == ToleranceType.ALL;
+    }
+
+    private void logRecordWithError(SourceRecord preTransformRecord, SourceRecord record, ProcessingContext<SourceRecord> context) {
+        String operation = getFailedOperation(record);
+        SourceRecord recordToLog = operation.equals("transform") ? preTransformRecord : record;
+        log.warn("{} Failed to {} record, offset '{}' and partition '{}'. Raising exception {}",
+                this, operation, recordToLog.sourceOffset(), recordToLog.sourcePartition(), context.error());
+    }
+
+    private String getFailedOperation(SourceRecord record) {
+        return record == null ? "transform" : "convert";
     }
 
     protected List<SourceRecord> poll() throws InterruptedException {

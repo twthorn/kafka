@@ -63,6 +63,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.AdditionalAnswers;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
@@ -671,7 +672,7 @@ public class AbstractWorkerSourceTaskTest {
     }
 
     @Test
-    public void testSendRecordsRetriableException() {
+    public void testSendRecordsFilterTransformation() {
         createWorkerTask();
 
         SourceRecord record1 = new SourceRecord(PARTITION, OFFSET, TOPIC, 1, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
@@ -707,6 +708,59 @@ public class AbstractWorkerSourceTaskTest {
     }
 
     @Test
+    public void testSendRecordsFailedTransformationErrorToleranceNone() {
+        createWorkerTask();
+
+        SourceRecord record1 = new SourceRecord(PARTITION, OFFSET, TOPIC, 1, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
+
+        expectConvertHeadersAndKeyValue(emptyHeaders(), TOPIC);
+
+        Mockito.doAnswer(invocation -> {
+            ProcessingContext contextArg = invocation.getArgument(0); // First argument: context
+            contextArg.error(new ConnectException("failed"));
+            return null;
+        }).when(transformationChain).apply(any(), eq(record1));
+
+        TopicPartitionInfo topicPartitionInfo = new TopicPartitionInfo(0, null, Collections.emptyList(), Collections.emptyList());
+        TopicDescription topicDesc = new TopicDescription(TOPIC, false, Collections.singletonList(topicPartitionInfo));
+
+        workerTask.toSend = Arrays.asList(record1);
+
+        // The transformation errored out so the error should be re-raised by sendRecords with error tolerance None
+        Exception exception = assertThrows(ConnectException.class, workerTask::sendRecords);
+        assertTrue(exception.getMessage().contains("Failed to transform"));
+
+        // Ensure the transformation was called
+        verify(transformationChain, times(1)).apply(any(), eq(record1));
+    }
+
+    @Test
+    public void testSendRecordsFailedTransformationErrorToleranceAll() {
+        createWorkerTaskErrorsAllTolerance();
+
+        SourceRecord record1 = new SourceRecord(PARTITION, OFFSET, TOPIC, 1, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
+
+        expectConvertHeadersAndKeyValue(emptyHeaders(), TOPIC);
+
+        Mockito.doAnswer(invocation -> {
+            ProcessingContext contextArg = invocation.getArgument(0); // First argument: context
+            contextArg.error(new ConnectException("failed"));
+            return null;
+        }).when(transformationChain).apply(any(), eq(record1));
+
+        TopicPartitionInfo topicPartitionInfo = new TopicPartitionInfo(0, null, Collections.emptyList(), Collections.emptyList());
+        TopicDescription topicDesc = new TopicDescription(TOPIC, false, Collections.singletonList(topicPartitionInfo));
+
+        workerTask.toSend = Arrays.asList(record1);
+
+        // The transformation errored out so the error should be ignored & the record skipped with error tolerance all
+        assertTrue(workerTask.sendRecords());
+
+        // Ensure the transformation was called
+        verify(transformationChain, times(1)).apply(any(), eq(record1));
+    }
+
+    @Test
     public void testSendRecordsConversionExceptionErrorToleranceNone() {
         createWorkerTask();
 
@@ -729,7 +783,8 @@ public class AbstractWorkerSourceTaskTest {
         workerTask.toSend = Arrays.asList(record1, record2, record3);
 
         // Send records should fail when errors.tolerance is none and the conversion call fails
-        assertThrows(ConnectException.class, workerTask::sendRecords);
+        Exception exception = assertThrows(ConnectException.class, workerTask::sendRecords);
+        assertTrue(exception.getMessage().contains("Failed to convert"));
         assertThrows(ConnectException.class, workerTask::sendRecords);
         assertThrows(ConnectException.class, workerTask::sendRecords);
 
