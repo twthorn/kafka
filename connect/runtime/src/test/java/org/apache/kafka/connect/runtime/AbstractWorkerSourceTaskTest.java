@@ -52,6 +52,8 @@ import org.apache.kafka.connect.storage.HeaderConverter;
 import org.apache.kafka.connect.storage.OffsetStorageWriter;
 import org.apache.kafka.connect.storage.StatusBackingStore;
 import org.apache.kafka.connect.storage.StringConverter;
+import org.apache.kafka.connect.transforms.Transformation;
+import org.apache.kafka.connect.transforms.predicates.Predicate;
 import org.apache.kafka.connect.util.ConnectorTaskId;
 import org.apache.kafka.connect.util.TopicAdmin;
 import org.apache.kafka.connect.util.TopicCreationGroup;
@@ -68,6 +70,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.mockito.stubbing.Answer;
+import org.mockito.stubbing.OngoingStubbing;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -81,6 +84,7 @@ import java.util.Set;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.apache.kafka.connect.integration.MonitorableSourceConnector.TOPIC_CONFIG;
 import static org.apache.kafka.connect.runtime.ConnectorConfig.CONNECTOR_CLASS_CONFIG;
@@ -363,8 +367,8 @@ public class AbstractWorkerSourceTaskTest {
         StringConverter stringConverter = new StringConverter();
         SampleConverterWithHeaders testConverter = new SampleConverterWithHeaders();
 
-        createWorkerTask(stringConverter, testConverter, stringConverter, RetryWithToleranceOperatorTest.noopOperator(),
-                Collections::emptyList);
+        createWorkerTask(stringConverter, testConverter, stringConverter, RetryWithToleranceOperatorTest.noneOperator(),
+                Collections::emptyList, transformationChain);
 
         expectSendRecord(null);
         expectApplyTransformationChain();
@@ -672,7 +676,7 @@ public class AbstractWorkerSourceTaskTest {
     }
 
     @Test
-    public void testSendRecordsFilterTransformation() {
+    public void testSendRecordsRetriableException() {
         createWorkerTask();
 
         SourceRecord record1 = new SourceRecord(PARTITION, OFFSET, TOPIC, 1, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
@@ -709,44 +713,45 @@ public class AbstractWorkerSourceTaskTest {
 
     @Test
     public void testSendRecordsFailedTransformationErrorToleranceNone() {
-        createWorkerTask();
-
         SourceRecord record1 = new SourceRecord(PARTITION, OFFSET, TOPIC, 1, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
+
+        RetryWithToleranceOperator retryWithToleranceOperator = RetryWithToleranceOperatorTest.noneOperator();
+        TransformationChain transformationChainRetriableException = getTransformationChain(
+               retryWithToleranceOperator, List.of(new RetriableException("Test"), record1));
+        createWorkerTask(transformationChainRetriableException, retryWithToleranceOperator);
 
         expectConvertHeadersAndKeyValue(emptyHeaders(), TOPIC);
 
-        Mockito.doAnswer(invocation -> {
-            ProcessingContext contextArg = invocation.getArgument(0); // First argument: context
-            contextArg.error(new ConnectException("failed"));
-            return null;
-        }).when(transformationChain).apply(any(), eq(record1));
-
         TopicPartitionInfo topicPartitionInfo = new TopicPartitionInfo(0, null, Collections.emptyList(), Collections.emptyList());
         TopicDescription topicDesc = new TopicDescription(TOPIC, false, Collections.singletonList(topicPartitionInfo));
+        when(admin.describeTopics(TOPIC)).thenReturn(Collections.singletonMap(TOPIC, topicDesc));
 
         workerTask.toSend = Arrays.asList(record1);
 
         // The transformation errored out so the error should be re-raised by sendRecords with error tolerance None
         Exception exception = assertThrows(ConnectException.class, workerTask::sendRecords);
-        assertTrue(exception.getMessage().contains("Failed to transform"));
+        assertTrue(exception.getMessage().contains("Tolerance exceeded"));
 
         // Ensure the transformation was called
-        verify(transformationChain, times(1)).apply(any(), eq(record1));
+        verify(transformationChainRetriableException, times(1)).apply(any(), eq(record1));
+
+        // The second transform call will succeed, batch should succeed at sending the one record (none were skipped)
+        assertTrue(workerTask.sendRecords());
+        verifySendRecord(1);
     }
 
     @Test
     public void testSendRecordsFailedTransformationErrorToleranceAll() {
-        createWorkerTaskErrorsAllTolerance();
+        RetryWithToleranceOperator retryWithToleranceOperator = RetryWithToleranceOperatorTest.allOperator();
+        TransformationChain transformationChainRetriableException = getTransformationChain(
+                retryWithToleranceOperator,
+                List.of(new RetriableException("Test")));
+
+        createWorkerTask(transformationChainRetriableException, retryWithToleranceOperator);
 
         SourceRecord record1 = new SourceRecord(PARTITION, OFFSET, TOPIC, 1, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
 
         expectConvertHeadersAndKeyValue(emptyHeaders(), TOPIC);
-
-        Mockito.doAnswer(invocation -> {
-            ProcessingContext contextArg = invocation.getArgument(0); // First argument: context
-            contextArg.error(new ConnectException("failed"));
-            return null;
-        }).when(transformationChain).apply(any(), eq(record1));
 
         TopicPartitionInfo topicPartitionInfo = new TopicPartitionInfo(0, null, Collections.emptyList(), Collections.emptyList());
         TopicDescription topicDesc = new TopicDescription(TOPIC, false, Collections.singletonList(topicPartitionInfo));
@@ -757,24 +762,25 @@ public class AbstractWorkerSourceTaskTest {
         assertTrue(workerTask.sendRecords());
 
         // Ensure the transformation was called
-        verify(transformationChain, times(1)).apply(any(), eq(record1));
+        verify(transformationChainRetriableException, times(1)).apply(any(), eq(record1));
     }
 
     @Test
     public void testSendRecordsConversionExceptionErrorToleranceNone() {
-        createWorkerTask();
-
         SourceRecord record1 = new SourceRecord(PARTITION, OFFSET, TOPIC, 1, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
         SourceRecord record2 = new SourceRecord(PARTITION, OFFSET, TOPIC, 2, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
         SourceRecord record3 = new SourceRecord(PARTITION, OFFSET, TOPIC, 3, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
 
-        // When we try to convert the key/value of each record, throw an exception
-        throwExceptionConvertHeadersAndKeyValue(emptyHeaders(), TOPIC);
+        RetryWithToleranceOperator retryWithToleranceOperator = RetryWithToleranceOperatorTest.noneOperator();
+        List<Object> results = Stream.of(record1, record2, record3)
+                .collect(Collectors.toList());
+        TransformationChain chain = getTransformationChain(
+                retryWithToleranceOperator,
+                results);
+        createWorkerTask(chain, retryWithToleranceOperator);
 
-        // Transformations for each record are a no-op
-        when(transformationChain.apply(any(), eq(record1))).thenReturn(record1);
-        when(transformationChain.apply(any(), eq(record2))).thenReturn(record2);
-        when(transformationChain.apply(any(), eq(record3))).thenReturn(record3);
+        // When we try to convert the key/value of each record, throw an exception
+        throwExceptionWhenConvertKey(emptyHeaders(), TOPIC);
 
         TopicPartitionInfo topicPartitionInfo = new TopicPartitionInfo(0, null, Collections.emptyList(), Collections.emptyList());
         TopicDescription topicDesc = new TopicDescription(TOPIC, false, Collections.singletonList(topicPartitionInfo));
@@ -784,7 +790,7 @@ public class AbstractWorkerSourceTaskTest {
 
         // Send records should fail when errors.tolerance is none and the conversion call fails
         Exception exception = assertThrows(ConnectException.class, workerTask::sendRecords);
-        assertTrue(exception.getMessage().contains("Failed to convert"));
+        assertTrue(exception.getMessage().contains("Tolerance exceeded"));
         assertThrows(ConnectException.class, workerTask::sendRecords);
         assertThrows(ConnectException.class, workerTask::sendRecords);
 
@@ -796,19 +802,20 @@ public class AbstractWorkerSourceTaskTest {
 
     @Test
     public void testSendRecordsConversionExceptionErrorToleranceAll() {
-        createWorkerTaskErrorsAllTolerance();
-
         SourceRecord record1 = new SourceRecord(PARTITION, OFFSET, TOPIC, 1, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
         SourceRecord record2 = new SourceRecord(PARTITION, OFFSET, TOPIC, 2, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
         SourceRecord record3 = new SourceRecord(PARTITION, OFFSET, TOPIC, 3, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
 
-        // When we try to convert the key/value of each record, throw an exception
-        throwExceptionConvertHeadersAndKeyValue(emptyHeaders(), TOPIC);
+        RetryWithToleranceOperator retryWithToleranceOperator = RetryWithToleranceOperatorTest.allOperator();
+        List<Object> results = Stream.of(record1, record2, record3)
+                .collect(Collectors.toList());
+        TransformationChain chain = getTransformationChain(
+                retryWithToleranceOperator,
+                results);
+        createWorkerTask(chain, retryWithToleranceOperator);
 
-        // Transformations for each record are a no-op
-        when(transformationChain.apply(any(), eq(record1))).thenReturn(record1);
-        when(transformationChain.apply(any(), eq(record2))).thenReturn(record2);
-        when(transformationChain.apply(any(), eq(record3))).thenReturn(record3);
+        // When we try to convert the key/value of each record, throw an exception
+        throwExceptionWhenConvertKey(emptyHeaders(), TOPIC);
 
         workerTask.toSend = Arrays.asList(record1, record2, record3);
 
@@ -916,7 +923,7 @@ public class AbstractWorkerSourceTaskTest {
         assertEquals(valueConverter.fromConnectData(topic, headers, RECORD_SCHEMA, RECORD), SERIALIZED_RECORD);
     }
 
-    private void throwExceptionConvertHeadersAndKeyValue(Headers headers, String topic) {
+    private void throwExceptionWhenConvertKey(Headers headers, String topic) {
         if (headers.iterator().hasNext()) {
             when(headerConverter.fromConnectHeader(anyString(), anyString(), eq(Schema.STRING_SCHEMA),
                     anyString()))
@@ -941,16 +948,44 @@ public class AbstractWorkerSourceTaskTest {
         return new RecordHeaders();
     }
 
-    private void createWorkerTask() {
-        createWorkerTask(keyConverter, valueConverter, headerConverter, RetryWithToleranceOperatorTest.noopOperator(), Collections::emptyList);
+    private TransformationChain getTransformationChain(RetryWithToleranceOperator toleranceOperator, List<Object> results) {
+        Transformation transformation = mock(Transformation.class);
+        OngoingStubbing stub = when(transformation.apply(any()));
+        for (Object result: results) {
+            if (result instanceof Exception) {
+                stub = stub.thenThrow((Exception) result);
+            } else {
+                stub = stub.thenReturn(result);
+            }
+        }
+        return buildTransformationChain(transformation, toleranceOperator);
     }
 
-    private void createWorkerTaskErrorsAllTolerance() {
-        createWorkerTask(keyConverter, valueConverter, headerConverter, RetryWithToleranceOperatorTest.allOperator(), Collections::emptyList);
+    private TransformationChain buildTransformationChain(Transformation transformation, RetryWithToleranceOperator toleranceOperator) {
+        Predicate<SourceRecord> predicate = mock(Predicate.class);
+        when(predicate.test(any())).thenReturn(true);
+        TransformationStage<SourceRecord> stage = new TransformationStage<>(
+                predicate,
+                false,
+                transformation);
+        TransformationChain realTransformationChainRetriableException = new TransformationChain(List.of(stage), toleranceOperator);
+        TransformationChain transformationChainRetriableException = Mockito.spy(realTransformationChainRetriableException);
+        return transformationChainRetriableException;
+    }
+
+    private void createWorkerTask(TransformationChain transformationChain, RetryWithToleranceOperator toleranceOperator) {
+        createWorkerTask(keyConverter, valueConverter, headerConverter, toleranceOperator, Collections::emptyList,
+                transformationChain);
+    }
+
+    private void createWorkerTask() {
+        createWorkerTask(
+                keyConverter, valueConverter, headerConverter, RetryWithToleranceOperatorTest.noneOperator(), Collections::emptyList, transformationChain);
     }
 
     private void createWorkerTask(Converter keyConverter, Converter valueConverter, HeaderConverter headerConverter,
-                                  RetryWithToleranceOperator<SourceRecord> retryWithToleranceOperator, Supplier<List<ErrorReporter<SourceRecord>>> errorReportersSupplier) {
+                                  RetryWithToleranceOperator<SourceRecord> retryWithToleranceOperator, Supplier<List<ErrorReporter<SourceRecord>>> errorReportersSupplier,
+                                  TransformationChain transformationChain) {
         workerTask = new AbstractWorkerSourceTask(
                 taskId, sourceTask, statusListener, TargetState.STARTED, keyConverter, valueConverter, headerConverter, transformationChain,
                 sourceTaskContext, producer, admin, TopicCreationGroup.configuredGroups(sourceConfig), offsetReader, offsetWriter, offsetStore,
