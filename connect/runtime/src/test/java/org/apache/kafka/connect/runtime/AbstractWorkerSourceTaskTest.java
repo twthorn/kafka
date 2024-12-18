@@ -52,8 +52,6 @@ import org.apache.kafka.connect.storage.HeaderConverter;
 import org.apache.kafka.connect.storage.OffsetStorageWriter;
 import org.apache.kafka.connect.storage.StatusBackingStore;
 import org.apache.kafka.connect.storage.StringConverter;
-import org.apache.kafka.connect.transforms.Transformation;
-import org.apache.kafka.connect.transforms.predicates.Predicate;
 import org.apache.kafka.connect.util.ConnectorTaskId;
 import org.apache.kafka.connect.util.TopicAdmin;
 import org.apache.kafka.connect.util.TopicCreationGroup;
@@ -65,12 +63,10 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.AdditionalAnswers;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.mockito.stubbing.Answer;
-import org.mockito.stubbing.OngoingStubbing;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -716,7 +712,7 @@ public class AbstractWorkerSourceTaskTest {
         SourceRecord record1 = new SourceRecord(PARTITION, OFFSET, TOPIC, 1, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
 
         RetryWithToleranceOperator retryWithToleranceOperator = RetryWithToleranceOperatorTest.noneOperator();
-        TransformationChain transformationChainRetriableException = getTransformationChain(
+        TransformationChain transformationChainRetriableException = WorkerTestUtils.getTransformationChain(
                retryWithToleranceOperator, List.of(new RetriableException("Test"), record1));
         createWorkerTask(transformationChainRetriableException, retryWithToleranceOperator);
 
@@ -743,7 +739,7 @@ public class AbstractWorkerSourceTaskTest {
     @Test
     public void testSendRecordsFailedTransformationErrorToleranceAll() {
         RetryWithToleranceOperator retryWithToleranceOperator = RetryWithToleranceOperatorTest.allOperator();
-        TransformationChain transformationChainRetriableException = getTransformationChain(
+        TransformationChain transformationChainRetriableException = WorkerTestUtils.getTransformationChain(
                 retryWithToleranceOperator,
                 List.of(new RetriableException("Test")));
 
@@ -774,7 +770,7 @@ public class AbstractWorkerSourceTaskTest {
         RetryWithToleranceOperator retryWithToleranceOperator = RetryWithToleranceOperatorTest.noneOperator();
         List<Object> results = Stream.of(record1, record2, record3)
                 .collect(Collectors.toList());
-        TransformationChain chain = getTransformationChain(
+        TransformationChain chain = WorkerTestUtils.getTransformationChain(
                 retryWithToleranceOperator,
                 results);
         createWorkerTask(chain, retryWithToleranceOperator);
@@ -809,7 +805,7 @@ public class AbstractWorkerSourceTaskTest {
         RetryWithToleranceOperator retryWithToleranceOperator = RetryWithToleranceOperatorTest.allOperator();
         List<Object> results = Stream.of(record1, record2, record3)
                 .collect(Collectors.toList());
-        TransformationChain chain = getTransformationChain(
+        TransformationChain chain = WorkerTestUtils.getTransformationChain(
                 retryWithToleranceOperator,
                 results);
         createWorkerTask(chain, retryWithToleranceOperator);
@@ -946,31 +942,6 @@ public class AbstractWorkerSourceTaskTest {
 
     private RecordHeaders emptyHeaders() {
         return new RecordHeaders();
-    }
-
-    private TransformationChain getTransformationChain(RetryWithToleranceOperator toleranceOperator, List<Object> results) {
-        Transformation transformation = mock(Transformation.class);
-        OngoingStubbing stub = when(transformation.apply(any()));
-        for (Object result: results) {
-            if (result instanceof Exception) {
-                stub = stub.thenThrow((Exception) result);
-            } else {
-                stub = stub.thenReturn(result);
-            }
-        }
-        return buildTransformationChain(transformation, toleranceOperator);
-    }
-
-    private TransformationChain buildTransformationChain(Transformation transformation, RetryWithToleranceOperator toleranceOperator) {
-        Predicate<SourceRecord> predicate = mock(Predicate.class);
-        when(predicate.test(any())).thenReturn(true);
-        TransformationStage<SourceRecord> stage = new TransformationStage<>(
-                predicate,
-                false,
-                transformation);
-        TransformationChain realTransformationChainRetriableException = new TransformationChain(List.of(stage), toleranceOperator);
-        TransformationChain transformationChainRetriableException = Mockito.spy(realTransformationChainRetriableException);
-        return transformationChainRetriableException;
     }
 
     private void createWorkerTask(TransformationChain transformationChain, RetryWithToleranceOperator toleranceOperator) {
