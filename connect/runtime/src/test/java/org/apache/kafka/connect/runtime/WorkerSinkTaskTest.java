@@ -908,8 +908,8 @@ public class WorkerSinkTaskTest {
 
     @Test
     public void testRaisesFailedRetriableExceptionFromTransform() {
-        RetryWithToleranceOperator retryWithToleranceOperator = RetryWithToleranceOperatorTest.noneOperator();
-        TransformationChain transformationChainRetriableException = getTransformationChain(
+        RetryWithToleranceOperator<RetriableException> retryWithToleranceOperator = RetryWithToleranceOperatorTest.noneOperator();
+        TransformationChain<RetriableException, SinkRecord> transformationChainRetriableException = getTransformationChain(
                 retryWithToleranceOperator, List.of(new RetriableException("Test")));
         createTask(initialState, transformationChainRetriableException, retryWithToleranceOperator);
 
@@ -933,8 +933,8 @@ public class WorkerSinkTaskTest {
 
     @Test
     public void testSkipsFailedRetriableExceptionFromTransform() {
-        RetryWithToleranceOperator retryWithToleranceOperator = RetryWithToleranceOperatorTest.allOperator();
-        TransformationChain transformationChainRetriableException = getTransformationChain(
+        RetryWithToleranceOperator<RetriableException> retryWithToleranceOperator = RetryWithToleranceOperatorTest.allOperator();
+        TransformationChain<RetriableException, SinkRecord> transformationChainRetriableException = getTransformationChain(
                 retryWithToleranceOperator, List.of(new RetriableException("Test")));
         createTask(initialState, transformationChainRetriableException, retryWithToleranceOperator);
 

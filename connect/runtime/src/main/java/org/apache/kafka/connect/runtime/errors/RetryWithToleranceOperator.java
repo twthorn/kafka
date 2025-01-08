@@ -219,7 +219,7 @@ public class RetryWithToleranceOperator<T> implements AutoCloseable {
                     if (withinToleranceLimits()) {
                         return null;
                     } else {
-                        throw new ConnectException("Exceeded deadline & tolerance for retriable exception", e);
+                        throw e;
                     }
                 }
                 if (stopping) {

@@ -711,9 +711,9 @@ public class AbstractWorkerSourceTaskTest {
     public void testSendRecordsFailedTransformationErrorToleranceNone() {
         SourceRecord record1 = new SourceRecord(PARTITION, OFFSET, TOPIC, 1, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
 
-        RetryWithToleranceOperator retryWithToleranceOperator = RetryWithToleranceOperatorTest.noneOperator();
-        TransformationChain transformationChainRetriableException = WorkerTestUtils.getTransformationChain(
-               retryWithToleranceOperator, List.of(new RetriableException("Test"), record1));
+        RetryWithToleranceOperator<RetriableException> retryWithToleranceOperator = RetryWithToleranceOperatorTest.noneOperator();
+        TransformationChain<RetriableException, SourceRecord> transformationChainRetriableException =
+                WorkerTestUtils.getTransformationChain(retryWithToleranceOperator, List.of(new RetriableException("Test"), record1));
         createWorkerTask(transformationChainRetriableException, retryWithToleranceOperator);
 
         expectConvertHeadersAndKeyValue(emptyHeaders(), TOPIC);
@@ -738,8 +738,8 @@ public class AbstractWorkerSourceTaskTest {
 
     @Test
     public void testSendRecordsFailedTransformationErrorToleranceAll() {
-        RetryWithToleranceOperator retryWithToleranceOperator = RetryWithToleranceOperatorTest.allOperator();
-        TransformationChain transformationChainRetriableException = WorkerTestUtils.getTransformationChain(
+        RetryWithToleranceOperator<RetriableException> retryWithToleranceOperator = RetryWithToleranceOperatorTest.allOperator();
+        TransformationChain<RetriableException, SourceRecord> transformationChainRetriableException = WorkerTestUtils.getTransformationChain(
                 retryWithToleranceOperator,
                 List.of(new RetriableException("Test")));
 
@@ -767,10 +767,10 @@ public class AbstractWorkerSourceTaskTest {
         SourceRecord record2 = new SourceRecord(PARTITION, OFFSET, TOPIC, 2, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
         SourceRecord record3 = new SourceRecord(PARTITION, OFFSET, TOPIC, 3, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
 
-        RetryWithToleranceOperator retryWithToleranceOperator = RetryWithToleranceOperatorTest.noneOperator();
+        RetryWithToleranceOperator<RetriableException> retryWithToleranceOperator = RetryWithToleranceOperatorTest.noneOperator();
         List<Object> results = Stream.of(record1, record2, record3)
                 .collect(Collectors.toList());
-        TransformationChain chain = WorkerTestUtils.getTransformationChain(
+        TransformationChain<RetriableException, SourceRecord> chain = WorkerTestUtils.getTransformationChain(
                 retryWithToleranceOperator,
                 results);
         createWorkerTask(chain, retryWithToleranceOperator);
@@ -802,10 +802,10 @@ public class AbstractWorkerSourceTaskTest {
         SourceRecord record2 = new SourceRecord(PARTITION, OFFSET, TOPIC, 2, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
         SourceRecord record3 = new SourceRecord(PARTITION, OFFSET, TOPIC, 3, KEY_SCHEMA, KEY, RECORD_SCHEMA, RECORD);
 
-        RetryWithToleranceOperator retryWithToleranceOperator = RetryWithToleranceOperatorTest.allOperator();
+        RetryWithToleranceOperator<RetriableException> retryWithToleranceOperator = RetryWithToleranceOperatorTest.allOperator();
         List<Object> results = Stream.of(record1, record2, record3)
                 .collect(Collectors.toList());
-        TransformationChain chain = WorkerTestUtils.getTransformationChain(
+        TransformationChain<RetriableException, SourceRecord> chain = WorkerTestUtils.getTransformationChain(
                 retryWithToleranceOperator,
                 results);
         createWorkerTask(chain, retryWithToleranceOperator);

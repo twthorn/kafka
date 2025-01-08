@@ -16,9 +16,9 @@
  */
 package org.apache.kafka.connect.runtime;
 
+import org.apache.kafka.connect.connector.ConnectRecord;
 import org.apache.kafka.connect.runtime.distributed.ExtendedAssignment;
 import org.apache.kafka.connect.runtime.errors.RetryWithToleranceOperator;
-import org.apache.kafka.connect.source.SourceRecord;
 import org.apache.kafka.connect.storage.AppliedConnectorConfig;
 import org.apache.kafka.connect.storage.ClusterConfigState;
 import org.apache.kafka.connect.transforms.Transformation;
@@ -166,28 +166,32 @@ public class WorkerTestUtils {
                 "Wrong rebalance delay in " + assignment);
     }
 
-    public static TransformationChain getTransformationChain(RetryWithToleranceOperator toleranceOperator, List<Object> results) {
-        Transformation transformation = mock(Transformation.class);
-        OngoingStubbing stub = when(transformation.apply(any()));
+    public static <T, R extends ConnectRecord<R>> TransformationChain<T, R> getTransformationChain(
+            RetryWithToleranceOperator<T> toleranceOperator,
+            List<Object> results) {
+        Transformation<R> transformation = mock(Transformation.class);
+        OngoingStubbing<R> stub = when(transformation.apply(any()));
         for (Object result: results) {
             if (result instanceof Exception) {
                 stub = stub.thenThrow((Exception) result);
             } else {
-                stub = stub.thenReturn(result);
+                stub = stub.thenReturn((R) result);
             }
         }
         return buildTransformationChain(transformation, toleranceOperator);
     }
 
-    public static TransformationChain buildTransformationChain(Transformation transformation, RetryWithToleranceOperator toleranceOperator) {
-        Predicate<SourceRecord> predicate = mock(Predicate.class);
+    public static <T, R extends ConnectRecord<R>> TransformationChain<T, R> buildTransformationChain(
+            Transformation<R> transformation,
+            RetryWithToleranceOperator<T> toleranceOperator) {
+        Predicate<R> predicate = mock(Predicate.class);
         when(predicate.test(any())).thenReturn(true);
-        TransformationStage<SourceRecord> stage = new TransformationStage<>(
+        TransformationStage<R> stage = new TransformationStage(
                 predicate,
                 false,
                 transformation);
-        TransformationChain realTransformationChainRetriableException = new TransformationChain(List.of(stage), toleranceOperator);
-        TransformationChain transformationChainRetriableException = Mockito.spy(realTransformationChainRetriableException);
+        TransformationChain<T, R> realTransformationChainRetriableException = new TransformationChain(List.of(stage), toleranceOperator);
+        TransformationChain<T, R> transformationChainRetriableException = Mockito.spy(realTransformationChainRetriableException);
         return transformationChainRetriableException;
     }
 }
