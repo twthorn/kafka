@@ -214,13 +214,7 @@ public class RetryWithToleranceOperator<T> implements AutoCloseable {
                     errorHandlingMetrics.recordRetry();
                 } else {
                     log.trace("Can't retry. start={}, attempt={}, deadline={}", startTime, attempt, deadline);
-                    context.error(e);
-                    markAsFailed();
-                    if (withinToleranceLimits()) {
-                        return null;
-                    } else {
-                        throw e;
-                    }
+                    throw e;
                 }
                 if (stopping) {
                     log.trace("Shutdown has been scheduled. Marking operation as failed.");
